@@ -1,15 +1,23 @@
 class_name GameHUD
 extends CanvasLayer
-## Mobile + desktop HUD: dynamic joystick (left), drag-look pad (right), attack / emote /
-## talk buttons, the player health bar, room info, and the LLM NPC chat panel.
+## Mobile + desktop HUD with a true MULTITOUCH input router: a dynamic joystick (left),
+## a drag-look region (right) and the attack / emote / talk buttons are all driven from a
+## single index-keyed router, so each finger acts independently — you can move, look and
+## tap buttons at the same time without one input stealing another. Also: the player
+## health bar, room info, toast, and the LLM NPC chat panel.
 
 signal talk_pressed()
+
+const MOUSE_ID: int = -1
+const TOP_MARGIN_FRAC: float = 0.16
 
 var player: Player
 var nearest_npc_getter: Callable
 
 var _root: Control
 var _joystick: Joystick
+var _atk_btn: Button
+var _emote_btn: Button
 var _talk_btn: Button
 var _hp_fill: ColorRect
 var _hp_label: Label
@@ -23,6 +31,10 @@ var _chat_title: Label
 var _thinking: Label
 var _chat_npc: NPC
 
+# Multitouch routing: pointer id (touch index, or MOUSE_ID) -> role string.
+var _touches: Dictionary = {}
+var _touch_mode: bool = false
+
 
 func build() -> void:
 	_root = Control.new()
@@ -31,22 +43,10 @@ func build() -> void:
 	add_child(_root)
 
 	_joystick = Joystick.new()
-	_joystick.anchor_left = 0.0
-	_joystick.anchor_right = 0.5
-	_joystick.anchor_top = 0.18
-	_joystick.anchor_bottom = 1.0
-	_joystick.offset_right = 0
+	_joystick.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_joystick.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_joystick.moved.connect(_on_joy)
 	_root.add_child(_joystick)
-
-	var look := Control.new()
-	look.anchor_left = 0.5
-	look.anchor_right = 1.0
-	look.anchor_top = 0.18
-	look.anchor_bottom = 1.0
-	look.mouse_filter = Control.MOUSE_FILTER_STOP
-	look.gui_input.connect(_on_look_input)
-	_root.add_child(look)
 
 	_build_buttons()
 	_build_health()
@@ -69,6 +69,11 @@ func set_room_info(room: String, knights: int) -> void:
 		var others := maxi(knights - 1, 0)
 		var who := "alone - share the link to invite a friend" if others == 0 else ("%d other knight%s here" % [others, "" if others == 1 else "s"])
 		_room_label.text = "Room %s  -  %s" % [room, who]
+
+
+func set_status(text: String) -> void:
+	if _room_label != null:
+		_room_label.text = text
 
 
 func toast(text: String) -> void:
@@ -100,7 +105,7 @@ func open_chat(npc: NPC) -> void:
 	_chat_panel.visible = true
 	if player != null:
 		player.input_enabled = false
-	_joystick.moved.emit(Vector2.ZERO)
+	_release_all_pointers()
 	_chat_input.grab_focus()
 
 
@@ -123,38 +128,157 @@ func _process(_delta: float) -> void:
 	_talk_btn.visible = npc != null
 
 
-func _build_buttons() -> void:
-	var attack := _round_button("ATK", 132, Color(0.78, 0.24, 0.22))
-	attack.add_theme_font_size_override("font_size", 40)
-	attack.anchor_left = 1.0
-	attack.anchor_top = 1.0
-	attack.anchor_right = 1.0
-	attack.anchor_bottom = 1.0
-	attack.offset_left = -156
-	attack.offset_top = -160
-	attack.offset_right = -24
-	attack.offset_bottom = -28
-	attack.pressed.connect(func() -> void:
-		if player != null:
-			player.attack())
-	_root.add_child(attack)
+# ---- multitouch input router -------------------------------------------------
 
-	var emote := _round_button("WAVE", 92, Color(0.2, 0.45, 0.7))
-	emote.add_theme_font_size_override("font_size", 22)
-	emote.anchor_left = 1.0
-	emote.anchor_top = 1.0
-	emote.anchor_right = 1.0
-	emote.anchor_bottom = 1.0
-	emote.offset_left = -270
-	emote.offset_top = -150
-	emote.offset_right = -178
-	emote.offset_bottom = -58
-	emote.pressed.connect(func() -> void:
-		if player != null:
-			player.emote())
-	_root.add_child(emote)
+func _unhandled_input(event: InputEvent) -> void:
+	if player == null:
+		return
+	if _chat_panel != null and _chat_panel.visible:
+		return
+
+	if event is InputEventScreenTouch:
+		if not _touch_mode:
+			_touch_mode = true
+			_release_all_pointers()
+		var t := event as InputEventScreenTouch
+		if t.pressed:
+			_begin_pointer(t.index, t.position)
+		else:
+			_end_pointer(t.index)
+	elif event is InputEventScreenDrag:
+		var d := event as InputEventScreenDrag
+		_drag_pointer(d.index, d.position, d.relative)
+	elif event is InputEventMouseButton and not _touch_mode:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			if mb.pressed:
+				_begin_pointer(MOUSE_ID, mb.position)
+			else:
+				_end_pointer(MOUSE_ID)
+	elif event is InputEventMouseMotion and not _touch_mode:
+		var mm := event as InputEventMouseMotion
+		if mm.button_mask & MOUSE_BUTTON_MASK_LEFT:
+			_drag_pointer(MOUSE_ID, mm.position, mm.relative)
+
+
+func _begin_pointer(id: int, pos: Vector2) -> void:
+	var btn := _hit_button(pos)
+	if btn != "":
+		_touches[id] = btn
+		_fire_button(btn)
+		return
+
+	var size := _vp_size()
+	if pos.y < size.y * TOP_MARGIN_FRAC:
+		return
+
+	if pos.x < size.x * 0.5:
+		if not _role_active("joy"):
+			_touches[id] = "joy"
+			_joystick.begin(pos)
+	else:
+		if not _role_active("look"):
+			_touches[id] = "look"
+
+
+func _drag_pointer(id: int, pos: Vector2, rel: Vector2) -> void:
+	var role: String = str(_touches.get(id, ""))
+	if role == "joy":
+		_joystick.drag(pos)
+	elif role == "look":
+		player.add_look(rel.x, rel.y)
+
+
+func _end_pointer(id: int) -> void:
+	var role: String = str(_touches.get(id, ""))
+	if role == "joy":
+		_joystick.end()
+	_touches.erase(id)
+
+
+func _release_all_pointers() -> void:
+	_touches.clear()
+	_joystick.end()
+
+
+func _role_active(role: String) -> bool:
+	return _touches.values().has(role)
+
+
+func _hit_button(pos: Vector2) -> String:
+	if _talk_btn != null and _talk_btn.visible and _talk_btn.get_global_rect().has_point(pos):
+		return "talk"
+	if _atk_btn != null and _atk_btn.visible and _atk_btn.get_global_rect().has_point(pos):
+		return "atk"
+	if _emote_btn != null and _emote_btn.visible and _emote_btn.get_global_rect().has_point(pos):
+		return "emote"
+	return ""
+
+
+func _fire_button(role: String) -> void:
+	match role:
+		"atk":
+			if player != null:
+				player.attack()
+			_flash(_atk_btn)
+		"emote":
+			if player != null:
+				player.emote()
+			_flash(_emote_btn)
+		"talk":
+			talk_pressed.emit()
+			_flash(_talk_btn)
+
+
+func _flash(btn: Button) -> void:
+	if btn == null:
+		return
+	btn.pivot_offset = btn.size * 0.5
+	var tw := btn.create_tween()
+	tw.tween_property(btn, "scale", Vector2(0.88, 0.88), 0.06)
+	tw.tween_property(btn, "scale", Vector2.ONE, 0.12)
+
+
+func _vp_size() -> Vector2:
+	return get_viewport().get_visible_rect().size
+
+
+func _on_joy(vec: Vector2) -> void:
+	if player != null:
+		player.joy_vec = vec
+
+
+# ---- build -------------------------------------------------------------------
+
+func _build_buttons() -> void:
+	_atk_btn = _round_button("ATK", 132, Color(0.78, 0.24, 0.22))
+	_atk_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_atk_btn.add_theme_font_size_override("font_size", 40)
+	_atk_btn.anchor_left = 1.0
+	_atk_btn.anchor_top = 1.0
+	_atk_btn.anchor_right = 1.0
+	_atk_btn.anchor_bottom = 1.0
+	_atk_btn.offset_left = -156
+	_atk_btn.offset_top = -160
+	_atk_btn.offset_right = -24
+	_atk_btn.offset_bottom = -28
+	_root.add_child(_atk_btn)
+
+	_emote_btn = _round_button("WAVE", 92, Color(0.2, 0.45, 0.7))
+	_emote_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_emote_btn.add_theme_font_size_override("font_size", 22)
+	_emote_btn.anchor_left = 1.0
+	_emote_btn.anchor_top = 1.0
+	_emote_btn.anchor_right = 1.0
+	_emote_btn.anchor_bottom = 1.0
+	_emote_btn.offset_left = -270
+	_emote_btn.offset_top = -150
+	_emote_btn.offset_right = -178
+	_emote_btn.offset_bottom = -58
+	_root.add_child(_emote_btn)
 
 	_talk_btn = _round_button("Talk", 80, Color(0.25, 0.6, 0.4))
+	_talk_btn.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_talk_btn.anchor_left = 0.5
 	_talk_btn.anchor_right = 0.5
 	_talk_btn.anchor_top = 1.0
@@ -165,12 +289,12 @@ func _build_buttons() -> void:
 	_talk_btn.offset_bottom = -28
 	_talk_btn.add_theme_font_size_override("font_size", 30)
 	_talk_btn.visible = false
-	_talk_btn.pressed.connect(func() -> void: talk_pressed.emit())
 	_root.add_child(_talk_btn)
 
 
 func _build_health() -> void:
 	var panel := Panel.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	panel.offset_left = 16
 	panel.offset_top = 14
@@ -180,6 +304,7 @@ func _build_health() -> void:
 	_root.add_child(panel)
 
 	var track := ColorRect.new()
+	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	track.color = Color(0.05, 0.05, 0.07, 0.9)
 	track.set_anchors_preset(Control.PRESET_FULL_RECT)
 	track.offset_left = 12
@@ -189,6 +314,7 @@ func _build_health() -> void:
 	panel.add_child(track)
 
 	_hp_fill = ColorRect.new()
+	_hp_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hp_fill.color = Color(0.3, 0.85, 0.35)
 	_hp_fill.anchor_left = 0.0
 	_hp_fill.anchor_top = 0.0
@@ -197,6 +323,7 @@ func _build_health() -> void:
 	track.add_child(_hp_fill)
 
 	_hp_label = Label.new()
+	_hp_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hp_label.text = "You   100/100"
 	_hp_label.add_theme_font_size_override("font_size", 18)
 	_hp_label.position = Vector2(14, 8)
@@ -205,6 +332,7 @@ func _build_health() -> void:
 
 func _build_room_info() -> void:
 	_room_label = Label.new()
+	_room_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_room_label.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	_room_label.offset_top = 16
 	_room_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -217,6 +345,7 @@ func _build_room_info() -> void:
 
 func _build_toast() -> void:
 	_toast = Label.new()
+	_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_toast.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	_toast.anchor_left = 0.5
 	_toast.anchor_right = 0.5
@@ -382,26 +511,10 @@ func _disconnect_npc(npc: NPC) -> void:
 		npc.failed.disconnect(_on_npc_failed)
 
 
-func _on_joy(vec: Vector2) -> void:
-	if player != null:
-		player.joy_vec = vec
-
-
-func _on_look_input(event: InputEvent) -> void:
-	if player == null:
-		return
-	if event is InputEventScreenDrag:
-		var d := event as InputEventScreenDrag
-		player.add_look(d.relative.x, d.relative.y)
-	elif event is InputEventMouseMotion:
-		var m := event as InputEventMouseMotion
-		if m.button_mask & MOUSE_BUTTON_MASK_LEFT:
-			player.add_look(m.relative.x, m.relative.y)
-
-
 func _round_button(text: String, dia: int, color: Color) -> Button:
 	var b := Button.new()
 	b.text = text
+	b.focus_mode = Control.FOCUS_NONE
 	b.custom_minimum_size = Vector2(dia, dia)
 	b.add_theme_font_size_override("font_size", int(dia * 0.4))
 	b.add_theme_stylebox_override("normal", _box(color, dia / 2))
