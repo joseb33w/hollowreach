@@ -12,7 +12,7 @@ const ATTACK_CD: float = 1.5
 const PATROL_SPEED: float = 1.5
 const CHASE_SPEED: float = 3.3
 const GRAVITY: float = 20.0
-const MODEL_YAW_OFFSET: float = PI
+const MODEL_YAW_OFFSET: float = 0.0
 
 var eid: String = ""
 var host_mode: bool = false

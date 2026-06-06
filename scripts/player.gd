@@ -20,7 +20,7 @@ const MELEE_RANGE: float = 2.6
 const MELEE_ARC_DOT: float = 0.25
 const MELEE_DAMAGE: float = 34.0
 const MAX_HP: float = 100.0
-const MODEL_YAW_OFFSET: float = PI
+const MODEL_YAW_OFFSET: float = 0.0
 
 var joy_vec: Vector2 = Vector2.ZERO
 var hp: float = MAX_HP

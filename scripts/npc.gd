@@ -5,7 +5,7 @@ extends Node3D
 ## remembers the chat. Networking-free: each player talks to their own copy.
 
 const ENDPOINT: String = "https://npc.myapping.com/chat"
-const MODEL_YAW_OFFSET: float = PI
+const MODEL_YAW_OFFSET: float = 0.0
 const TALK_RANGE: float = 3.6
 
 signal thinking()
