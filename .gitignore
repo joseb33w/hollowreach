@@ -1,0 +1,21 @@
+# Godot import cache + export output
+.godot/
+/out/
+
+# Downloaded engine/templates (never commit the engine)
+/godot
+*.tpz
+*.tmp
+*.b64
+export_presets.cfg.bak
+
+# CC0 art binaries — fetched via ./fetch_assets.sh, not committed (keeps the repo light).
+# Godot regenerates the .import sidecars + extracted textures on first import.
+/models/*.glb
+/models/*.png
+/models/*.import
+/textures/*.png
+/textures/*.import
+
+# Local verification tooling (Playwright / supabase-js) — never part of the project
+/verify/

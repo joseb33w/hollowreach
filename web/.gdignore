@@ -1,0 +1,1 @@
+# Keep web/ out of Godot's import scan (bridge.js is loaded by the export shell).
