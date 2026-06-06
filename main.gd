@@ -17,6 +17,8 @@ var am_host: bool = false
 var _enemies_spawned: bool = false
 var _grace: float = 0.0
 var _send_acc: float = 0.0
+var _tap_layer: CanvasLayer = null
+var _connected_once: bool = false
 
 var _peers: Dictionary = {}     # id -> RemotePlayer
 var _peer_seen: Dictionary = {} # id -> last_seen seconds
@@ -56,6 +58,7 @@ func _ready() -> void:
 
 	Net.connected.connect(_on_net_connected)
 	Net.message.connect(_on_net_message)
+	Net.disconnected.connect(_on_net_disconnected)
 
 	if player.display_name == "You" and Net.local_name != "":
 		player.display_name = Net.local_name
@@ -124,25 +127,53 @@ func _show_tap_to_start() -> void:
 	tip.position = Vector2(0, 90)
 	dim.add_child(tip)
 
-	dim.gui_input.connect(func(e: InputEvent) -> void:
-		if (e is InputEventScreenTouch or e is InputEventMouseButton) and e.is_pressed():
-			started = true
-			player.input_enabled = true
-			_grace = 1.5
-			layer.queue_free()
-			_reelect_host()
-			if OS.has_feature("web"):
-				Net.connect_room())
+	_tap_layer = layer
+	dim.gui_input.connect(_on_tap_to_start)
+	add_child(layer)
+
+
+func _on_tap_to_start(e: InputEvent) -> void:
+	if started:
+		return
+	if not ((e is InputEventScreenTouch or e is InputEventMouseButton) and e.is_pressed()):
+		return
+	started = true
+	player.input_enabled = true
+	_grace = 1.5
+	if _tap_layer != null:
+		_tap_layer.queue_free()
+		_tap_layer = null
+	_reelect_host()
+	if OS.has_feature("web"):
+		if hud != null:
+			hud.set_status("Connecting...")
+		Net.connect_room()
 
 
 # ---- networking --------------------------------------------------------------
 
 func _on_net_connected(room: String, you: String) -> void:
+	_connected_once = true
 	if hud != null:
 		hud.set_room_info(room, _peers.size() + 1)
 		hud.toast("Joined room %s" % room)
 	_reelect_host()
 	_broadcast({"t": "hello", "n": player.display_name})
+
+
+func _on_net_disconnected() -> void:
+	if hud != null:
+		hud.set_status("Offline - exploring solo")
+	if started and OS.has_feature("web"):
+		var t := get_tree().create_timer(4.0)
+		t.timeout.connect(_retry_connect)
+
+
+func _retry_connect() -> void:
+	if started and OS.has_feature("web") and _peers.is_empty():
+		if hud != null and not _connected_once:
+			hud.set_status("Connecting...")
+		Net.connect_room()
 
 
 func _on_net_message(data: Dictionary) -> void:
