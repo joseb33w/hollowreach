@@ -3,7 +3,7 @@ extends Node3D
 ## A networked peer's Knight: interpolates toward the latest broadcast transform,
 ## shows a name tag + health bar, and plays attack/emote/hit/death one-shots.
 
-const MODEL_YAW_OFFSET: float = PI
+const MODEL_YAW_OFFSET: float = 0.0
 const LERP_POS: float = 12.0
 const LERP_ROT: float = 12.0
 
